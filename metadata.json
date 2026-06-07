@@ -1,0 +1,8 @@
+{
+  "name": "Vocalis",
+  "description": "Bộ công cụ chuyển đổi văn bản thành giọng nói và xử lý văn bản hiệu suất cao cho quy trình làm việc chuyên nghiệp.",
+  "requestFramePermissions": [],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}

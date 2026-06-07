@@ -1,0 +1,81 @@
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;700;900&family=Montserrat:wght@700;900&family=Oswald:wght@700&family=Playfair+Display:ital,wght@1,700&family=JetBrains+Mono:wght@700&family=Roboto:wght@700;900&display=swap');
+@import "tailwindcss";
+
+@theme {
+  --font-sans: "Inter", ui-sans-serif, system-ui, sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, monospace;
+}
+
+:root {
+  --bg: #0A0A0A;
+  --ink: #F3F4F6;
+  --line: #262626;
+  --accent: #3B82F6;
+}
+
+body {
+  background-color: var(--bg);
+  color: var(--ink);
+  font-family: var(--font-sans);
+}
+
+.card {
+  background: #121212;
+  border: 1px solid var(--line);
+  border-radius: 0.5rem;
+  box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.2), 0 2px 4px -1px rgba(0, 0, 0, 0.1);
+}
+
+.btn-primary {
+  background: var(--accent);
+  color: white;
+  padding: 0.5rem 1rem;
+  border-radius: 0.375rem;
+  font-weight: 600;
+  transition: all 0.2s ease;
+}
+
+.btn-primary:hover {
+  background: #2563EB;
+  transform: translateY(-1px);
+}
+
+.btn-secondary {
+  background: #1F1F1F;
+  color: var(--ink);
+  border: 1px solid var(--line);
+  padding: 0.5rem 1rem;
+  border-radius: 0.375rem;
+  font-weight: 600;
+  transition: all 0.2s ease;
+}
+
+.btn-secondary:hover {
+  background: #2D2D2D;
+  border-color: #404040;
+}
+
+.input-field {
+  background: #171717;
+  color: var(--ink);
+  border: 1px solid var(--line);
+  border-radius: 0.375rem;
+  padding: 0.5rem 0.75rem;
+  font-size: 0.875rem;
+  transition: all 0.2s ease;
+}
+
+.input-field:focus {
+  border-color: var(--accent);
+  background: #1A1A1A;
+  outline: none;
+  box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.2);
+}
+
+/* Custom scrollbar */
+::-webkit-scrollbar { width: 6px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: #333333; border-radius: 10px; }
+::-webkit-scrollbar-thumb:hover { background: #444444; }
+
+.no-scrollbar::-webkit-scrollbar { display: none; }

@@ -1,0 +1,28 @@
+
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Vocalis: Professional Audio Synthesis</title>
+    <script>
+        // Prevent "Cannot set property fetch of #<Window> which has only a getter"
+        if (typeof window !== 'undefined' && window.fetch) {
+            try {
+                const originalFetch = window.fetch;
+                Object.defineProperty(window, 'fetch', {
+                    get: function() { return originalFetch; },
+                    set: function() { console.warn("Ignored attempt to overwrite window.fetch"); },
+                    configurable: true
+                });
+            } catch (e) {
+                // Ignore if it fails
+            }
+        }
+    </script>
+</head>
+<body class="bg-gray-50 text-gray-900 font-sans antialiased overflow-x-hidden">
+    <div id="root"></div>
+    <script type="module" src="./src/index.tsx"></script>
+</body>
+</html>

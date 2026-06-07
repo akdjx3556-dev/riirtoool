@@ -1,0 +1,45 @@
+{
+  "name": "puch-gen-ai",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "scripts": {
+    "dev": "tsx server.ts",
+    "build": "vite build && esbuild server.ts --bundle --platform=node --format=cjs --packages=external --sourcemap --outfile=dist/server.cjs",
+    "start": "node dist/server.cjs",
+    "preview": "vite preview",
+    "lint": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@ffmpeg/core": "^0.12.10",
+    "@ffmpeg/ffmpeg": "^0.12.15",
+    "@ffmpeg/util": "^0.12.2",
+    "@google/genai": "^2.1.0",
+    "@google/generative-ai": "^0.24.1",
+    "@tailwindcss/vite": "^4.2.2",
+    "@types/uuid": "^10.0.0",
+    "edge-tts-ts": "^1.0.0",
+    "express": "^5.2.1",
+    "jszip": "^3.10.1",
+    "lucide-react": "^0.577.0",
+    "mammoth": "^1.12.0",
+    "motion": "^12.38.0",
+    "react": "^19.2.0",
+    "react-dom": "^19.2.0",
+    "tailwindcss": "^4.2.2",
+    "uuid": "^13.0.0",
+    "wavesurfer.js": "^7.12.6"
+  },
+  "devDependencies": {
+    "@types/express": "^5.0.6",
+    "@types/node": "^22.14.0",
+    "@vitejs/plugin-react": "^5.0.0",
+    "esbuild": "^0.28.0",
+    "tsx": "^4.22.4",
+    "typescript": "~5.8.2",
+    "vite": "^6.2.0"
+  },
+  "overrides": {
+    "node-domexception": "file:./local-patches/node-domexception"
+  }
+}
