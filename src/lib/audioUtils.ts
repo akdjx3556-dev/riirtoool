@@ -61,6 +61,75 @@ export function audioBufferToWav(buffer: AudioBuffer): Blob {
     return new Blob([bufferArray], { type: 'audio/wav' });
 }
 
+/**
+ * Speech-optimized Overlap-Add (OLA) time stretching algorithm with energy normalization.
+ * It speeds up or slows down the AudioBuffer while maintaining pitch preservation.
+ */
+export function stretchAudioBuffer(buffer: AudioBuffer, speed: number): AudioBuffer {
+    if (Math.abs(speed - 1.0) < 0.01) {
+        return buffer;
+    }
+
+    const numOfChan = buffer.numberOfChannels;
+    const sampleRate = buffer.sampleRate;
+    const targetLength = Math.max(10, Math.floor(buffer.length / speed));
+    
+    // Create new audio buffer for stretched audio
+    const AudioContextClass = window.AudioContext || (window as any).webkitAudioContext;
+    const ctx = new AudioContextClass();
+    const outputBuffer = ctx.createBuffer(numOfChan, targetLength, sampleRate);
+    
+    const frameSize = 1024; // standard window size for speech analysis
+    const synthHop = 256;  // synthesis hop size (fixed stride)
+    const analHop = Math.round(synthHop * speed); // analysis hop size (dynamic based on speed)
+
+    // Pre-calculate Hann window function to minimize spectral leakage
+    const windowFunc = new Float32Array(frameSize);
+    for (let i = 0; i < frameSize; i++) {
+        windowFunc[i] = 0.5 * (1.0 - Math.cos((2 * Math.PI * i) / (frameSize - 1)));
+    }
+
+    // Process each channel independently
+    for (let channel = 0; channel < numOfChan; channel++) {
+        const inputData = buffer.getChannelData(channel);
+        const outputData = outputBuffer.getChannelData(channel);
+        
+        // Weight accumulator to normalize overlapping windows
+        const weightAccum = new Float32Array(targetLength);
+
+        let inputPtr = 0;
+        let outputPtr = 0;
+
+        while (inputPtr + frameSize <= inputData.length && outputPtr + frameSize <= targetLength) {
+            for (let i = 0; i < frameSize; i++) {
+                const sampleVal = inputData[inputPtr + i] * windowFunc[i];
+                outputData[outputPtr + i] += sampleVal;
+                // Add square of window function to record overall accumulated energy
+                weightAccum[outputPtr + i] += windowFunc[i] * windowFunc[i];
+            }
+            
+            inputPtr += analHop;
+            outputPtr += synthHop;
+        }
+
+        // Normalize weight to prevent amplitude modulation and maintain voice consistency
+        for (let i = 0; i < targetLength; i++) {
+            if (weightAccum[i] > 1e-4) {
+                outputData[i] /= weightAccum[i];
+            }
+            // Strict amplitude clamping to prevent clipping/distortion
+            if (outputData[i] > 1.0) outputData[i] = 1.0;
+            if (outputData[i] < -1.0) outputData[i] = -1.0;
+        }
+    }
+
+    try {
+        ctx.close();
+    } catch (e) {}
+
+    return outputBuffer;
+}
+
 function writeString(view: DataView, offset: number, string: string) {
     for (let i = 0; i < string.length; i++) {
         view.setUint8(offset + i, string.charCodeAt(i));

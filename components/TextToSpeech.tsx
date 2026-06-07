@@ -9,7 +9,44 @@ import { ResultsPanel } from './ResultsPanel';
 import { keyManager } from '../services/keyManager';
 import { v4 as uuidv4 } from 'uuid';
 
-import { audioBufferToWav } from '../src/lib/audioUtils';
+import { audioBufferToWav, stretchAudioBuffer } from '../src/lib/audioUtils';
+
+// Sub-routine: Render merged audio buffers applying potential speed and preserving pitch
+const renderMergedBuffer = async (
+    buffers: Array<{ buffer: AudioBuffer; startTime: number }>,
+    targetSpeed: number
+): Promise<AudioBuffer> => {
+    // 1. Calculate total duration in 1.0x timeline to merge flawlessly
+    const totalDuration = buffers.reduce(
+        (max, item) => Math.max(max, item.startTime + item.buffer.duration), 
+        0
+    );
+    
+    const targetSampleRate = 44100;
+    const renderLength = Math.ceil((totalDuration + 0.1) * targetSampleRate);
+    
+    const offlineCtx = new OfflineAudioContext(
+        buffers[0].buffer.numberOfChannels,
+        renderLength,
+        targetSampleRate
+    );
+
+    buffers.forEach(item => {
+        const source = offlineCtx.createBufferSource();
+        source.buffer = item.buffer;
+        source.connect(offlineCtx.destination);
+        source.start(item.startTime);
+    });
+
+    const mergedBuffer = await offlineCtx.startRendering();
+
+    // 2. Apply high-quality pitch preserving time stretching if targetSpeed is not 1.0
+    if (Math.abs(targetSpeed - 1.0) < 0.01) {
+        return mergedBuffer;
+    }
+
+    return stretchAudioBuffer(mergedBuffer, targetSpeed);
+};
 
 export const TextToSpeech: React.FC<{ 
     onAudioMerged?: (url: string | null) => void,
@@ -40,103 +77,47 @@ export const TextToSpeech: React.FC<{
         }, 300);
         return () => clearTimeout(handler);
     }, [speed]);
-    const [mergedAudioUrls, setMergedAudioUrls] = useState<Array<{ url: string, startTime: number, isTimed: boolean }>>([]);
+
+    const [mergedOriginalUrl, setMergedOriginalUrl] = useState<string | null>(null);
+    const [mergedSpedUpUrl, setMergedSpedUpUrl] = useState<string | null>(null);
+    const [isSpedUpRendering, setIsSpedUpRendering] = useState(false);
     const [shouldProcess, setShouldProcess] = useState(false);
     
     const abortControllerRef = useRef<AbortController | null>(null);
+    const masterAudioBuffersRef = useRef<Array<{ buffer: AudioBuffer, startTime: number }> | null>(null);
 
-    const mergeFinalPartsInternal = useCallback(async (partsToMerge: Array<{ url: string, startTime: number, isTimed: boolean }>) => {
-        if (partsToMerge.length === 0) return null;
+    // Background process: Whenever speed shifts, if audio was already merged, regenerate the SpedUp master smoothly in background
+    useEffect(() => {
+        if (!masterAudioBuffersRef.current || masterAudioBuffersRef.current.length === 0) return;
         
-        let tempCtx: AudioContext | null = null;
-        try {
-            setIsMerging(true);
-            setMergeProgress(0);
-            
-            const isTimed = partsToMerge.some(p => p.isTimed);
-            
-            if (isTimed) {
-                const AudioContextClass = window.AudioContext || (window as any).webkitAudioContext;
-                tempCtx = new AudioContextClass();
+        let isActive = true;
+        
+        const updateSpedUpMaster = async () => {
+            try {
+                setIsSpedUpRendering(true);
+                const spedUpBuffer = await renderMergedBuffer(masterAudioBuffersRef.current!, debouncedSpeed);
+                if (!isActive) return;
                 
-                const buffersWithMetadata = await Promise.all(
-                    partsToMerge.map(async item => {
-                        try {
-                            const res = await fetch(item.url);
-                            const arrayBuffer = await res.arrayBuffer();
-                            const buffer = await new Promise<AudioBuffer>((resolve, reject) => {
-                                tempCtx!.decodeAudioData(arrayBuffer, resolve, reject);
-                            });
-                            return { buffer, startTime: item.startTime };
-                        } catch (e) {
-                            console.error("Lỗi giải mã audio part:", e);
-                            return null;
-                        }
-                    })
-                );
-
-                const validBuffers = buffersWithMetadata.filter(Boolean) as any[];
-                if (validBuffers.length === 0) return null;
-
-                // IMPORTANT: In timed mode, the final file MUST start at 0s and strictly follow SRT timecodes
-                const maxEnd = validBuffers.reduce((max, item) => 
-                    Math.max(max, item.startTime + item.buffer.duration), 0);
-                
-                const targetSampleRate = 44100;
-                const offlineCtx = new OfflineAudioContext(
-                    validBuffers[0].buffer.numberOfChannels,
-                    Math.ceil((maxEnd + 0.1) * targetSampleRate),
-                    targetSampleRate
-                );
-
-                validBuffers.forEach(item => {
-                    const source = offlineCtx.createBufferSource();
-                    source.buffer = item.buffer;
-                    source.connect(offlineCtx.destination);
-                    // Place at absolute startTime (relative to 0s)
-                    source.start(item.startTime);
-                });
-
-                const renderedBuffer = await offlineCtx.startRendering();
-                const wavBlob = audioBufferToWav(renderedBuffer);
+                const wavBlob = audioBufferToWav(spedUpBuffer);
                 const url = URL.createObjectURL(wavBlob);
                 
-                setMergedAudioUrls(prev => {
-                    prev.forEach(u => URL.revokeObjectURL(u.url));
-                    return [{ url, startTime: 0, isTimed: true }];
+                setMergedSpedUpUrl(prev => {
+                    if (prev) URL.revokeObjectURL(prev);
+                    return url;
                 });
-                onAudioMerged?.(url);
-                return url;
-            } else {
-                const blobs = await Promise.all(
-                    partsToMerge.map(async item => {
-                        const res = await fetch(item.url);
-                        return await res.blob();
-                    })
-                );
-                const mergedBlob = new Blob(blobs, { type: 'audio/mpeg' });
-                const url = URL.createObjectURL(mergedBlob);
-                
-                setMergedAudioUrls(prev => {
-                    prev.forEach(u => URL.revokeObjectURL(u.url));
-                    return [{ url, startTime: 0, isTimed: false }];
-                });
-                onAudioMerged?.(url);
-                return url;
+            } catch (err) {
+                console.error("Lỗi cập nhật âm thanh tăng tốc nền:", err);
+            } finally {
+                if (isActive) setIsSpedUpRendering(false);
             }
-        } catch (error) {
-            console.error("Gộp file Master thất bại:", error);
-            return null;
-        } finally {
-            setIsMerging(false);
-            setMergeProgress(100);
-            if (tempCtx && typeof tempCtx.close === 'function') {
-                try {
-                    await tempCtx.close();
-                } catch (e) {}
-            }
-        }
-    }, [onAudioMerged]);
+        };
+
+        updateSpedUpMaster();
+
+        return () => {
+            isActive = false;
+        };
+    }, [debouncedSpeed]);
 
     const mergeAudio = useCallback(async () => {
         let audioContext: AudioContext | null = null;
@@ -153,124 +134,80 @@ export const TextToSpeech: React.FC<{
             audioContext = new AudioContextClass();
 
             const isTimedMerge = chunks.some(c => c.startTime !== undefined);
-            const PART_SIZE = 500; // Smaller size for more visible progress
-            const finalParts: Array<{ url: string, startTime: number, isTimed: boolean }> = [];
-
-            for (let p = 0; p < finishedChunks.length; p += PART_SIZE) {
-                const partChunks = finishedChunks.slice(p, p + PART_SIZE);
-                const progressOffset = (p / finishedChunks.length) * 100;
-                const progressMultiplier = partChunks.length / finishedChunks.length;
-                const partStartTime = partChunks[0].startTime || 0;
-
-                if (isTimedMerge) {
-                    const baseTime = partStartTime;
-                    const audioBuffers: Array<{ buffer: AudioBuffer, startTime: number }> = [];
-                    const batchSize = 10;
-                    for (let i = 0; i < partChunks.length; i += batchSize) {
-                        const batch = partChunks.slice(i, i + batchSize);
-                        const batchResult = await Promise.all(
-                            batch.map(async chunk => {
-                                try {
-                                    const response = await fetch(chunk.audioUrl!);
-                                    const arrayBuffer = await response.arrayBuffer();
-                                    const audioBuffer = await new Promise<AudioBuffer>((resolve, reject) => {
-                                        try {
-                                            const promise = audioContext!.decodeAudioData(arrayBuffer, resolve, reject);
-                                            if (promise) promise.catch(reject);
-                                        } catch (err) { reject(err); }
-                                    });
-                                    return {
-                                        buffer: audioBuffer,
-                                        startTime: (chunk.startTime !== undefined ? chunk.startTime - baseTime : 0),
-                                    };
-                                } catch (e) { return null; }
-                            })
-                        );
-                        audioBuffers.push(...batchResult.filter(Boolean) as any[]);
-                        setMergeProgress(Math.floor(progressOffset + (i / partChunks.length) * 50 * progressMultiplier));
-                        await new Promise(resolve => setTimeout(resolve, 0));
-                    }
-                    
-                    if (audioBuffers.length === 0) continue;
-
-                    const totalDuration = audioBuffers.reduce((max, item) => Math.max(max, item.startTime + (item.buffer.duration / debouncedSpeed)), 0);
-                    const targetSampleRate = 44100;
-                    const offlineCtx = new OfflineAudioContext(
-                        audioBuffers[0].buffer.numberOfChannels,
-                        Math.ceil((totalDuration + 0.1) * targetSampleRate),
-                        targetSampleRate
-                    );
-
-                    audioBuffers.forEach(item => {
-                        const source = offlineCtx.createBufferSource();
-                        source.buffer = item.buffer;
-                        source.playbackRate.value = debouncedSpeed;
-                        source.connect(offlineCtx.destination);
-                        source.start(item.startTime);
-                    });
-
-                    const renderedBuffer = await offlineCtx.startRendering();
-                    const wavBlob = audioBufferToWav(renderedBuffer);
-                    const url = URL.createObjectURL(wavBlob);
-                    finalParts.push({ url, startTime: partStartTime, isTimed: true });
-                } else {
-                    const audioBuffers: Array<{ buffer: AudioBuffer, startTime: number }> = [];
-                    const PAUSE_DURATION = 0.3; // 300ms pause between chunks
-                    let currentOffset = 0;
-
-                    for (let i = 0; i < partChunks.length; i++) {
-                        try {
-                            const res = await fetch(partChunks[i].audioUrl!);
-                            const ab = await res.arrayBuffer();
-                            const buffer = await new Promise<AudioBuffer>((resolve, reject) => {
-                                audioContext!.decodeAudioData(ab, resolve, reject);
-                            });
-                            audioBuffers.push({ buffer, startTime: currentOffset });
-                            currentOffset += (buffer.duration / debouncedSpeed) + PAUSE_DURATION;
-                        } catch (e) { console.error("Error decoding in normal merge:", e); }
-                        
-                        setMergeProgress(Math.floor(progressOffset + (i / partChunks.length) * 90 * progressMultiplier));
-                    }
-
-                    if (audioBuffers.length === 0) continue;
-
-                    const totalDuration = audioBuffers.reduce((max, item) => Math.max(max, item.startTime + (item.buffer.duration / debouncedSpeed)), 0);
-                    const targetSampleRate = 44100;
-                    const offlineCtx = new OfflineAudioContext(
-                        audioBuffers[0].buffer.numberOfChannels,
-                        Math.ceil((totalDuration + 0.1) * targetSampleRate),
-                        targetSampleRate
-                    );
-
-                    audioBuffers.forEach(item => {
-                        const source = offlineCtx.createBufferSource();
-                        source.buffer = item.buffer;
-                        source.playbackRate.value = debouncedSpeed;
-                        source.connect(offlineCtx.destination);
-                        source.start(item.startTime);
-                    });
-
-                    const renderedBuffer = await offlineCtx.startRendering();
-                    const wavBlob = audioBufferToWav(renderedBuffer);
-                    const url = URL.createObjectURL(wavBlob);
-                    finalParts.push({ url, startTime: 0, isTimed: false });
-                }
-            }
-
-            setMergeProgress(100);
-            setMergedAudioUrls(prev => {
-                prev.forEach(u => URL.revokeObjectURL(u.url));
-                return finalParts;
-            });
-
-            // Master Merge: Padding from 0s and strictly respecting SRT timecodes
-            // ALWAYS perform master merge if timed to ensure leading silence is preserved
-            if (isTimedMerge || finalParts.length > 1) {
-                await mergeFinalPartsInternal(finalParts);
-            } else {
-                onAudioMerged?.(finalParts.length > 0 ? finalParts[0].url : null);
-            }
+            const audioBuffers: Array<{ buffer: AudioBuffer, startTime: number }> = [];
             
+            const batchSize = 15;
+            let currentOffset = 0;
+            const PAUSE_DURATION = 0.3; // 300ms pause in sequential mode
+
+            for (let i = 0; i < finishedChunks.length; i += batchSize) {
+                const batch = finishedChunks.slice(i, i + batchSize);
+                const batchResult = await Promise.all(
+                    batch.map(async (chunk, batchIdx) => {
+                        try {
+                            const response = await fetch(chunk.audioUrl!);
+                            const arrayBuffer = await response.arrayBuffer();
+                            const audioBuffer = await new Promise<AudioBuffer>((resolve, reject) => {
+                                try {
+                                    const promise = audioContext!.decodeAudioData(arrayBuffer, resolve, reject);
+                                    if (promise) promise.catch(reject);
+                                } catch (err) { reject(err); }
+                            });
+                            return {
+                                buffer: audioBuffer,
+                                chunkIndex: i + batchIdx,
+                                chunkStartTime: chunk.startTime,
+                            };
+                        } catch (e) {
+                            return null;
+                        }
+                    })
+                );
+
+                const validBatchResults = batchResult.filter(Boolean) as any[];
+                validBatchResults.sort((a, b) => a.chunkIndex - b.chunkIndex);
+
+                for (const item of validBatchResults) {
+                    if (isTimedMerge) {
+                        const startTime = item.chunkStartTime !== undefined ? item.chunkStartTime : 0;
+                        audioBuffers.push({
+                            buffer: item.buffer,
+                            startTime,
+                        });
+                    } else {
+                        audioBuffers.push({
+                            buffer: item.buffer,
+                            startTime: currentOffset,
+                        });
+                        currentOffset += item.buffer.duration + PAUSE_DURATION;
+                    }
+                }
+
+                setMergeProgress(Math.min(95, Math.floor(((i + batch.length) / finishedChunks.length) * 100)));
+                await new Promise(resolve => setTimeout(resolve, 0));
+            }
+
+            if (audioBuffers.length === 0) {
+                setIsMerging(false);
+                return;
+            }
+
+            // Save basic 1.0x buffers securely inside ref
+            masterAudioBuffersRef.current = audioBuffers;
+
+            // 1. Generate normal 1x Original Master (Path 1)
+            const originalBuffer = await renderMergedBuffer(audioBuffers, 1.0);
+            const originalWavBlob = audioBufferToWav(originalBuffer);
+            const originalUrl = URL.createObjectURL(originalWavBlob);
+            setMergedOriginalUrl(originalUrl);
+            onAudioMerged?.(originalUrl);
+
+            // 2. Generate Sped-Up Master (Path 2)
+            const spedUpBuffer = await renderMergedBuffer(audioBuffers, speed);
+            const spedUpWavBlob = audioBufferToWav(spedUpBuffer);
+            const spedUpUrl = URL.createObjectURL(spedUpWavBlob);
+            setMergedSpedUpUrl(spedUpUrl);
+
             setMergeProgress(100);
         } catch (error) {
             console.error("Gộp file âm thanh thất bại:", error);
@@ -282,11 +219,7 @@ export const TextToSpeech: React.FC<{
                 } catch (e) {}
             }
         }
-    }, [chunks, onAudioMerged, mergeFinalPartsInternal, debouncedSpeed]);
-
-    const mergeFinalParts = useCallback(() => {
-        mergeFinalPartsInternal(mergedAudioUrls);
-    }, [mergeFinalPartsInternal, mergedAudioUrls]);
+    }, [chunks, onAudioMerged, speed]);
 
     const successfulChunksCount = useMemo(() => chunks.filter(c => c.status === 'finished').length, [chunks]);
     const failedChunksCount = useMemo(() => chunks.filter(c => c.status === 'error').length, [chunks]);
@@ -301,9 +234,12 @@ export const TextToSpeech: React.FC<{
         if (processingState === 'idle' && areAllJobsDone && hasFinishedChunks && failedChunksCount === 0) {
             mergeAudio();
         } else if (processingState === 'processing' || totalChunksCount === 0) {
-            if (mergedAudioUrls.length > 0) {
-                mergedAudioUrls.forEach(u => URL.revokeObjectURL(u.url));
-                setMergedAudioUrls([]);
+            if (mergedOriginalUrl || mergedSpedUpUrl) {
+                if (mergedOriginalUrl) URL.revokeObjectURL(mergedOriginalUrl);
+                if (mergedSpedUpUrl) URL.revokeObjectURL(mergedSpedUpUrl);
+                setMergedOriginalUrl(null);
+                setMergedSpedUpUrl(null);
+                masterAudioBuffersRef.current = null;
                 onAudioMerged?.(null);
             }
         }
@@ -421,13 +357,13 @@ export const TextToSpeech: React.FC<{
                         speaker,
                         token,
                         appkey: APP_KEY,
-                        speed,
+                        speed: 1.0,
                     }, signal);
                 } else {
                     audioUrl = await synthesizeEdgeTTS({
                         text: chunk.text,
                         voice: edgeVoice,
-                        speed,
+                        speed: 1.0,
                     }, signal);
                 }
 
@@ -455,8 +391,8 @@ export const TextToSpeech: React.FC<{
         
         const queue = [...chunksToProcess];
         
-        const actualConcurrency = ttsService === 'edgetts' ? Math.min(2, concurrentThreads) : concurrentThreads;
-        const actualDelay = ttsService === 'edgetts' ? Math.max(500, requestDelay) : requestDelay;
+        const actualConcurrency = concurrentThreads;
+        const actualDelay = requestDelay;
 
         const workerPromises = Array(actualConcurrency).fill(null).map(async () => {
             while (queue.length > 0) {
@@ -498,26 +434,29 @@ export const TextToSpeech: React.FC<{
         }
     }, []);
 
-    const handleDownloadAll = useCallback(async () => {
-        if (mergedAudioUrls.length === 0) return;
+    const handleDownloadOriginal = useCallback(() => {
+        if (!mergedOriginalUrl) return;
         const isTimedMerge = chunks.some(c => c.startTime !== undefined);
-        const baseName = isTimedMerge ? 'audio_timed_sync' : 'audio_merged';
-        const ext = isTimedMerge ? '.wav' : '.mp3';
-        
-        for (let i = 0; i < mergedAudioUrls.length; i++) {
-            const fileName = mergedAudioUrls.length > 1 ? `${baseName}_part${i + 1}${ext}` : `${baseName}${ext}`;
-            const a = document.createElement('a');
-            a.href = mergedAudioUrls[i].url;
-            a.download = fileName;
-            document.body.appendChild(a);
-            a.click();
-            a.remove();
-            
-            if (mergedAudioUrls.length > 1 && i < mergedAudioUrls.length - 1) {
-                await new Promise(resolve => setTimeout(resolve, 500));
-            }
-        }
-    }, [mergedAudioUrls, chunks]);
+        const baseName = isTimedMerge ? 'audio_master_goc_timed' : 'audio_master_goc';
+        const a = document.createElement('a');
+        a.href = mergedOriginalUrl;
+        a.download = `${baseName}.wav`;
+        document.body.appendChild(a);
+        a.click();
+        a.remove();
+    }, [mergedOriginalUrl, chunks]);
+
+    const handleDownloadSpedUp = useCallback(() => {
+        if (!mergedSpedUpUrl) return;
+        const isTimedMerge = chunks.some(c => c.startTime !== undefined);
+        const baseName = isTimedMerge ? `audio_master_tang_toc_${speed.toFixed(1)}x_timed` : `audio_master_tang_toc_${speed.toFixed(1)}x`;
+        const a = document.createElement('a');
+        a.href = mergedSpedUpUrl;
+        a.download = `${baseName}.wav`;
+        document.body.appendChild(a);
+        a.click();
+        a.remove();
+    }, [mergedSpedUpUrl, chunks, speed]);
     
     const handleCountryChange = useCallback((newCountry: string) => {
         setSelectedCountry(newCountry);
@@ -558,15 +497,18 @@ export const TextToSpeech: React.FC<{
             <ResultsPanel
                 chunks={chunks}
                 processingState={processingState}
-                mergedAudioUrls={mergedAudioUrls.map(u => u.url)}
+                mergedOriginalUrl={mergedOriginalUrl}
+                mergedSpedUpUrl={mergedSpedUpUrl}
+                speed={speed}
                 isMerging={isMerging}
+                isSpedUpRendering={isSpedUpRendering}
                 mergeProgress={mergeProgress}
                 onCancel={handleCancel}
                 removeChunk={removeChunk}
                 onClearQueue={clearQueue}
-                onDownloadAll={handleDownloadAll}
+                onDownloadOriginal={handleDownloadOriginal}
+                onDownloadSpedUp={handleDownloadSpedUp}
                 onMergeAudio={mergeAudio}
-                onMergeFinalParts={mergeFinalParts}
                 onRetryChunk={retryChunk}
                 onUpdateChunkText={updateChunkText}
                 onRetryAllFailed={retryAllFailed}

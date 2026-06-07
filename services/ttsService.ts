@@ -84,9 +84,10 @@ export const synthesizeChunk = (options: SynthesizeOptions, signal?: AbortSignal
         ws.binaryType = 'arraybuffer';
 
         ws.onopen = () => {
-            // Force standard speech rate (0) at the API level so that speed changes can be applied
-            // dynamically and cleanly when merging the files via OfflineAudioContext without re-synthesizing.
-            const speechRate = 0;
+            // Apply native speech rate scaling at the API level (e.g. 1.0 -> 0, 1.5 -> 50, 0.5 -> -50).
+            // This allows high-quality voice speed stretching without pitch degradation.
+            const speedVal = options.speed ?? 1.0;
+            const speechRate = Math.round((speedVal - 1.0) * 100);
 
             const payload = {
                 text: options.text,

@@ -95,7 +95,7 @@ async function startServer() {
     }
   }
 
-  const edgeTtsSemaphore = new Semaphore(1);
+  const edgeTtsSemaphore = new Semaphore(10);
 
   // API Route: Synthesize Text
   app.post("/api/tts", async (req, res) => {
